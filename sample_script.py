@@ -37,14 +37,21 @@ env.update_viewer(azimuth=66.08,distance=3.0,elevation=-50,lookat=[0.4,0.18,0.71
                   contactwidth=0.05,contactheight=0.05,contactrgba=np.array([1,0,0,1]),
                   VIS_JOINT=True,jointlength=0.25,jointwidth=0.05,jointrgba=[0.2,0.6,0.8,0.6])
 env.reset()
-
 env.forward(q=q_rev_des, joint_idxs=env.idxs_forward)
 
 tick = 0
 
 while (env.get_sim_time() < 100.0) and env.is_viewer_alive(): 
     env.step(ctrl=q_rev_des[-1,:], ctrl_idxs=env.idxs_forward)
+    env.step(ctrl=1, ctrl_idxs=6) #open it
     env.render()
 
+    print(f'Joint values: {env.data.ctrl[env.idxs_forward]}')
+    for obj_name in obj_names:
+        print(f'Object locations: {env.get_p_body(obj_name)}')
+    print(f'Gripper value: {env.data.ctrl[6]}')
+    
+
 env.close_viewer()
+
 print("Motion planning complete and executed.")
