@@ -408,3 +408,63 @@ def create_folder_if_not_exists(file_path):
         os.makedirs(folder_path)
         print ("[%s] created."%(folder_path))
         
+def softmax(x):
+    # Subtract max(x) to compute the softmax in a numerically stable way
+    e_x = np.exp(x - np.max(x))
+    return e_x / e_x.sum()
+
+def get_grasp_pose_primitive(env, obj_name, grasp_pose=None, dist_orientation="geodesic"):
+    tcp_position = env.get_p_body('tcp_link')
+    tcp_orientation = rpy2r(np.radians([0,0,0])) @ rpy2r(np.radians([-180,0,90]))
+    grasp_obj_position = env.get_p_body(obj_name)
+    grasp_obj_orientation = env.get_R_body(obj_name)
+    if grasp_pose == "upright":
+        grasp_obj_position[2] += 0.08
+        grasp_obj_orientation = grasp_obj_orientation @ rpy2r(np.radians([-90,0,90]))
+    elif grasp_pose == "right":
+        grasp_obj_position[1] += 0.03
+        grasp_obj_position[2] += 0.10
+        grasp_obj_orientation = grasp_obj_orientation @ rpy2r(np.radians([-180,0,180]))
+    elif grasp_pose == "left":
+        grasp_obj_position[1] += 0.03
+        grasp_obj_position[2] += 0.07
+        grasp_obj_orientation = grasp_obj_orientation @ rpy2r(np.radians([-180,0,0]))
+    elif grasp_pose == "forward":
+        grasp_obj_position[0] += 0.015
+        grasp_obj_position[2] += 0.05
+        grasp_obj_orientation = grasp_obj_orientation @ rpy2r(np.radians([-180,0,90]))
+    elif grasp_pose == "side":
+        rand_position = np.random.uniform(-0.1, 0.1)
+        rand_orientation = (rand_position + 0.10) * 180 / 0.2
+        grasp_obj_position[1] -= rand_position
+        grasp_obj_position[2] += 0.07
+        grasp_obj_orientation = grasp_obj_orientation @ rpy2r(np.radians([-180,0,rand_orientation]))
+    else:   # Randomly sample grasp pose based on distance [Euclidean + Orientation]
+        grasp_pose_primitive = ["upright", "right", "left", "side", "forward"]
+        grasp_obj_positions = []
+        grasp_obj_orientations = []
+        grasp_orientation_dists = []
+        for grasp_pose_prim in grasp_pose_primitive:
+            grasp_obj_pose = get_grasp_pose_primitive(obj_name, grasp_pose_prim)
+            grasp_obj_positions.append(grasp_obj_pose[:3, 3])
+            grasp_obj_orientations.append(grasp_obj_pose[:3, :3])
+        grasp_dist = grasp_obj_positions - tcp_position
+        # Calculate distances between orientations
+        for grasp_obj_orientation_ in grasp_obj_orientations:
+            if dist_orientation == "geodesic":
+                trace_product = np.trace(np.dot(tcp_orientation.T, grasp_obj_orientation_))
+                grasp_orientation_dist = np.arccos((trace_product - 1) / 2)
+            elif dist_orientation == "frobenius":
+                grasp_orientation_dist = np.linalg.norm(tcp_orientation - grasp_obj_orientation_, 'fro')
+            grasp_orientation_dists.append(grasp_orientation_dist)
+        grasp_orientation_dists = np.array(grasp_orientation_dists)
+        grasp_dist = np.linalg.norm(grasp_dist, axis=1)
+        grasp_weight = 1 / (grasp_dist + grasp_orientation_dists)
+        grasp_pose = np.random.choice(grasp_pose_primitive, p=grasp_weight / np.sum(grasp_weight))
+        print(f"grasp_pose: {grasp_pose}, grasp_weight: {grasp_weight}")
+        grasp_obj_pose = get_grasp_pose_primitive(obj_name, grasp_pose)
+        return grasp_obj_pose
+
+    grasp_obj_pose = pr2t(grasp_obj_position, grasp_obj_orientation)
+    print(grasp_obj_orientation, grasp_obj_position)
+    return grasp_obj_pose
