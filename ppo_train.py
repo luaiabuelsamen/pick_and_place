@@ -14,7 +14,6 @@ class PickPlaceEnvImage(gym.Env):
         xml_path = 'assets/ur5e/scene_ur5e_rg2_d435i_obj.xml'
         self.env = MuJoCoParserClass(name='UR5e with RG2 gripper', rel_xml_path=xml_path, VERBOSE=True)
 
-        # Object initialization
         self.obj_names = [body_name for body_name in self.env.body_names if body_name.startswith("obj_")]
         self.env.model.body('base_table').pos = np.array([0,0,0])
         self.env.model.body('front_object_table').pos = np.array([1.05,0,0])
@@ -22,14 +21,11 @@ class PickPlaceEnvImage(gym.Env):
         self.env.model.body('base').pos = np.array([0.18,0,0.8])
         self._randomize_scene()
 
-        # Camera and gripper initialization
         self.env.reset()
         q_init_upright = np.array([0, -np.pi / 2, 0, 0, np.pi / 2, 0])
         self.env.forward(q=q_init_upright, joint_idxs=self.env.idxs_forward)
         self.env.init_viewer(viewer_title='UR5e Simulation', viewer_width=1200, viewer_height=800, viewer_hide_menus=True)
         self.env.update_viewer(azimuth=66, distance=3.0, elevation=-50, lookat=[0.4, 0.18, 0.71])
-
-        # Spaces
         self.add_proprioception = add_proprioception
         
         self.image_space = gym.spaces.Box(low=0, high=255, shape=(64, 64, 3), dtype=np.uint8)
@@ -43,21 +39,21 @@ class PickPlaceEnvImage(gym.Env):
         else:
             self.observation_space = self.image_space
         self.action_space = gym.spaces.Box(low=-1.0, high=1.0, shape=(7,), dtype=np.float32)
-
-        # Episode tracking
         self.episode_steps = 0
         self.max_episode_steps = 500
         self.successful_grasps = 0
         self.successful_placements = 0
-
+   
     def reset(self, seed=None, options=None):
         self.env.reset()
-        self.env.forward()
+        q_init_upright = np.array([0, -np.pi / 2, 0, 0, np.pi / 2, 0])
+        self.env.forward(q=q_init_upright, joint_idxs=self.env.idxs_forward)
+        self._randomize_scene()
         self.episode_steps = 0
         self.successful_grasps = 0
         self.successful_placements = 0
         return self._get_obs(), {}
-
+    
     def _randomize_scene(self):
         n_obj = len(self.obj_names)
         xyzs = sample_xyzs(
@@ -66,38 +62,31 @@ class PickPlaceEnvImage(gym.Env):
         for obj_idx, obj_name in enumerate(self.obj_names):
             jntadr = self.env.model.body(obj_name).jntadr[0]
             self.env.model.joint(jntadr).qpos0[:3] = xyzs[obj_idx]
-
+    
     def step(self, action):
-        # Scale action and apply limits
         scaled_action = np.clip(action, -1.0, 1.0)
-        joint_action = scaled_action[:6] * 0.5  # Adjust scaling as needed
+        joint_action = scaled_action[:6] * 1.0  # Adjust scaling as needed
         gripper_action = scaled_action[6]
 
-        # Apply actions
         self.env.step(ctrl=joint_action, ctrl_idxs=self.env.idxs_forward)
         self.env.step(ctrl=gripper_action, ctrl_idxs=6)
 
-        # Compute next state and reward
         obs = self._get_obs()
         reward = self._compute_reward()
         self.episode_steps += 1
 
-        # Determine termination and truncation
         terminated = self._check_done()
         truncated = self.episode_steps >= self.max_episode_steps
-
         info = {
             'episode_steps': self.episode_steps,
             'successful_grasps': self.successful_grasps,
             'successful_placements': self.successful_placements
         }
+        self.env.render()
         return obs, reward, terminated, truncated, info
-
     def _get_obs(self):
-        # Capture image observation
         rgb_img = self._get_image_obs()
 
-        # Proprioceptive features
         if self.add_proprioception:
             joint_positions = self.env.data.ctrl[self.env.idxs_forward]
             joint_velocities = self.env.data.qvel[self.env.idxs_jacobian]
@@ -107,39 +96,33 @@ class PickPlaceEnvImage(gym.Env):
             return {'image': rgb_img, 'proprioception': proprio_obs}
         else:
             return rgb_img
-
+    
     def _get_image_obs(self):
         rgb_img, _ = self.env.grab_rgb_depth_img()
         rgb_img = cv2.resize(rgb_img, (64, 64), interpolation=cv2.INTER_AREA)
         return rgb_img.astype(np.uint8)
-
+    
     def _compute_reward(self):
-        # Key positions
         gripper_pos = self.env.get_p_body("tcp_link")
         target_pos = self.env.model.body("front_object_table").pos
         object_positions = np.array([self.env.get_p_body(obj_name) for obj_name in self.obj_names])
 
-        # Distances
         gripper_obj_distances = np.linalg.norm(object_positions - gripper_pos, axis=1)
         obj_target_distances = np.linalg.norm(object_positions - target_pos, axis=1)
 
-        # Reward components
         reach_reward = -np.min(gripper_obj_distances) * 0.1
         lift_reward = 0
         place_reward = -np.min(obj_target_distances) * 0.1
 
-        # Grasping and lifting
         if np.min(gripper_obj_distances) < 0.05:
             self.successful_grasps += 1
             lift_reward = 2.0
 
-        # Placing
         if np.min(obj_target_distances) < 0.1:
             self.successful_placements += 1
             place_reward = 10.0
-
         return reach_reward + lift_reward + place_reward
-
+    
     def _check_done(self):
         target_pos = self.env.model.body("front_object_table").pos
         object_positions = np.array([self.env.get_p_body(obj_name) for obj_name in self.obj_names])
@@ -152,137 +135,69 @@ def make_env(rank, add_proprioception=True):
         env = Monitor(env)
         return env
     return _init
-
-# if __name__ == "__main__":
-#     num_envs = 1
-#     env = DummyVecEnv([make_env(i) for i in range(num_envs)])
-#     env = VecTransposeImage(env)
-    
-#     eval_env = DummyVecEnv([make_env(0)])
-#     eval_env = VecTransposeImage(eval_env)
-    
-#     eval_callback = EvalCallback(
-#         eval_env,
-#         best_model_save_path="./best_model",
-#         log_path="./logs",
-#         eval_freq=5000,
-#         deterministic=True,
-#         render=False
-#     )
-    
-#     checkpoint_callback = CheckpointCallback(
-#         save_freq=10000,
-#         save_path="./checkpoints/",
-#         name_prefix="ppo_pickplace"
-#     )
-    
-#     policy_kwargs = {
-#         "net_arch": dict(pi=[256, 256], vf=[256, 256]),
-#         "share_features_extractor": False,
-#         "features_extractor_kwargs": {
-#             "cnn_output_dim": 512
-#         }
-#     }
-
-#     model = PPO(
-#         "MultiInputPolicy",
-#         env,
-#         verbose=1,
-#         tensorboard_log="./ppo_pickplace_vision/",
-#         learning_rate=3e-4,
-#         n_steps=1024,
-#         batch_size=128,
-#         n_epochs=5,
-#         gamma=0.99,
-#         gae_lambda=0.95,
-#         ent_coef=0.01,
-#         clip_range=0.2,
-#         max_grad_norm=0.5,
-#         vf_coef=0.5,
-#         policy_kwargs=policy_kwargs
-#     )
-
-#     model.learn(
-#         total_timesteps=1_000_000,
-#         callback=[eval_callback, checkpoint_callback, stop_callback],
-#         progress_bar=True
-#     )
-
-#     model.save("ppo_pick_and_place_vision_final")
-
 if __name__ == "__main__":
-    num_envs = 1  # Use a single environment for faster testing
-    env = DummyVecEnv([make_env(0)])  # Single environment
+    num_envs = 4
+    env = DummyVecEnv([make_env(i) for i in range(num_envs)])
     env = VecTransposeImage(env)
-
-    eval_env = DummyVecEnv([make_env(0)])  # Evaluation environment
+    
+    eval_env = DummyVecEnv([make_env(0)])
     eval_env = VecTransposeImage(eval_env)
-
+    
     eval_callback = EvalCallback(
         eval_env,
         best_model_save_path="./best_model",
         log_path="./logs",
-        eval_freq=1000,  # Evaluate frequently for quick feedback
+        eval_freq=5000,  # Evaluate every 5000 steps
         deterministic=True,
-        render=False
+        render=False,
+        callback_on_new_best=StopTrainingOnRewardThreshold(reward_threshold=200, verbose=1)  # Nested callback
     )
-
     checkpoint_callback = CheckpointCallback(
-        save_freq=2000,  # Save model every 2000 steps
+        save_freq=10000,
         save_path="./checkpoints/",
         name_prefix="ppo_pickplace"
     )
-
+    
     policy_kwargs = {
-        "net_arch": dict(pi=[128, 128], vf=[128, 128]),  # Reduced network size for faster training
+        "net_arch": dict(pi=[512, 512, 256], vf=[512, 512, 256]),  # Larger network
         "share_features_extractor": False,
-        "features_extractor_kwargs": {
-            "cnn_output_dim": 256
-        }
+        "features_extractor_kwargs": {"cnn_output_dim": 1024},  # Larger feature extractor
     }
-
-    # Initialize PPO model
     model = PPO(
         "MultiInputPolicy",
         env,
         verbose=1,
         tensorboard_log="./ppo_pickplace_vision/",
-        learning_rate=3e-4,
-        n_steps=256,  # Smaller timesteps per update
-        batch_size=32,  # Smaller batch size for faster updates
-        n_epochs=3,  # Fewer epochs to speed up training
-        gamma=0.99,
-        gae_lambda=0.95,
-        ent_coef=0.01,
-        clip_range=0.2,
+        learning_rate=1e-4,  # Lower learning rate for fine-grained updates
+        n_steps=2048,  # Allow longer trajectories per update
+        batch_size=256,  # Larger batches for better gradient estimation
+        n_epochs=10,  # More epochs to improve learning
+        gamma=0.98,  # Slightly lower gamma to prioritize shorter-term rewards
+        gae_lambda=0.9,  # Adjust GAE for smoother updates
+        ent_coef=0.02,  # Encourage exploration
+        clip_range=0.1,  # Smaller clip range for stability
         max_grad_norm=0.5,
         vf_coef=0.5,
-        policy_kwargs=policy_kwargs
+        policy_kwargs=policy_kwargs,
     )
 
-    # Train the model for a smaller number of timesteps
-    print("Starting training...")
     model.learn(
-        total_timesteps=10_000,  # Train for 10,000 timesteps
+        total_timesteps=1_000_000,  # Train for 1 million timesteps
         callback=[eval_callback, checkpoint_callback],
         progress_bar=True
     )
-    print("Training complete.")
+    
+    model.save("ppo_pick_and_place_vision_final")
 
-    # Save the model
-    model.save("ppo_pickplace_test")
-
-    # Load the model and run the environment
+    env = PickPlaceEnvImage(add_proprioception=True)
     print("Loading trained model...")
-    model = PPO.load("ppo_pickplace_test")
-
-    # Run the trained model in the environment
-    obs = env.reset()
-    for _ in range(500):  # Run for a few steps to visualize
+    model = PPO.load("./best_model/best_model")
+    obs, _ = env.reset()
+    for _ in range(1000):  # Run for a few steps to visualize
         action, _ = model.predict(obs, deterministic=True)
-        obs, reward, done, truncated, info = env.step(action)
-        env.render()  # Render the environment for visualization
-        if done or truncated:
-            obs = env.reset()
-
+        print(action)
+        obs, reward, terminated, truncated, info = env.step(action)
+        env.env.render()  # Render the environment for visualization
+        if terminated or truncated:
+            obs, _ = env.reset()
     print("Visualization complete.")
