@@ -1,5 +1,6 @@
 This repository implements a PPO RL agent for a simulated UR5e robotic arm with a gripper to perform pick-and-place tasks. The simulation leverages [MuJoCo](https://mujoco.org/) for physics and rendering, with training designed to process image and proprioceptive inputs.
 
+![demo](https://github.com/luaiabuelsamen/pick_and_place/blob/main/Demo..gif)
 ---
 
 #### Features
