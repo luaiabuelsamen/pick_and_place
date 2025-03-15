@@ -150,7 +150,7 @@ class MuJoCoParserClass(object):
         print ("n_site:[%d]"%(self.n_site))
         print ("site_names:%s"%(self.site_names))
 
-    def init_viewer(self,viewer_title='MuJoCo',viewer_width=1200,viewer_height=800,viewer_hide_menus=True):
+    def init_viewer(self,viewer_title='MuJoCo',viewer_width=1200,viewer_height=800,viewer_hide_menus=False):
         """
             Initialize viewer
         """
