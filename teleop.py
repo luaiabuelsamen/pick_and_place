@@ -112,6 +112,13 @@ try:
 
         record = False
         tick = 0
+        R_trgt = rpy2r(np.radians([0,80,0]))@rpy2r(np.radians([-180,0,90]))
+
+        pick_position = env.get_p_body(obj_names[0])
+        pick_position[2] += 0.01
+        pre_grasp_position = pick_position + np.array([0.0, 0.0, 0.1])
+        q_ik_pregrasp = env.solve_ik(body_name='tcp_link', p_trgt=pre_grasp_position, R_trgt=R_trgt, IK_P=True, IK_R=False, q_init=np.array(q_init_upright), idxs_forward=env.idxs_forward, idxs_jacobian=env.idxs_jacobian, RESET=False, DO_RENDER=False, render_every=1, th=1 * np.pi / 180.0, err_th=1e-2, w_weight=0.5)
+        current_q = q_ik_pregrasp
         while True:
             keys = pygame.key.get_pressed()
             

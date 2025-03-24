@@ -84,7 +84,8 @@ def integrate_rgbd_frames(rgb_images, depth_images, camera_poses, intrinsics):
         # Integrate into the volume (we need the inverse of the camera pose)
         # The pose is world-to-camera, but Open3D needs camera-to-world
         volume.integrate(rgbd, o3d_intrinsics, np.linalg.inv(pose))
-    
+        if i == 150:
+            break
     # Extract the mesh
     print("Extracting triangle mesh...")
     mesh = volume.extract_triangle_mesh()
