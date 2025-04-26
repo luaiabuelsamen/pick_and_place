@@ -1029,4 +1029,36 @@ class MuJoCoParserClass(object):
             Viewer resume
         """
         self.viewer._paused = False
-        
+
+
+def init_env():
+    xml_path = 'assets/ur5e/scene_ur5e_rg2_d435i_obj.xml'
+    env = MuJoCoParserClass(name='UR5e with RG2 gripper', rel_xml_path=xml_path, VERBOSE=True)
+
+    # Your existing simulation code...
+    obj_names = [body_name for body_name in env.body_names if body_name is not None and (body_name.startswith("obj_"))]
+    n_obj = len(obj_names)
+    xyzs = sample_xyzs(n_sample=n_obj,
+                x_range=[0.75, 1.25],y_range=[-0.38,0.38],z_range=[0.81,0.81],min_dist=0.2)
+    colors = np.array([plt.cm.gist_rainbow(x) for x in np.linspace(0, 1, n_obj)])
+
+    # Move tables and robot base
+    env.model.body('base_table').pos = np.array([0,0,0])
+    env.model.body('front_object_table').pos = np.array([1.05,0,0])
+    env.model.body('side_object_table').pos = np.array([0,-0.85,0])
+    env.model.body('base').pos = np.array([0.18,0,0.8])
+
+    for obj_idx, obj_name in enumerate(obj_names):
+        jntadr = env.model.body(obj_name).jntadr[0]
+        env.model.joint(jntadr).qpos0[:3] = xyzs[obj_idx, :]
+        geomadr = env.model.body(obj_name).geomadr[0]
+
+    platform_xyz = np.random.uniform([0.6, -0.3, 0.81], [1.0, 0.3, 0.81])
+    env.model.body('red_platform').pos = platform_xyz
+
+    q_init_upright = np.array([0, -np.pi/2, 0, 0, np.pi/2, 0])
+    env.reset()
+    env.forward(q=q_init_upright, joint_idxs=env.idxs_forward)
+    env.init_viewer(viewer_title='UR5e with RG2 gripper', viewer_width=1200, viewer_height=800, viewer_hide_menus=True)
+    env.update_viewer(azimuth=66.08, distance=3.0, elevation=-50, lookat=[0.4, 0.18, 0.71], VIS_TRANSPARENT=False, VIS_CONTACTPOINT=False, contactwidth=0.05, contactheight=0.05, contactrgba=np.array([1, 0, 0, 1]), VIS_JOINT=True, jointlength=0.25, jointwidth=0.05, jointrgba=[0.2, 0.6, 0.8, 0.6])
+    return env, obj_names, q_init_upright, platform_xyz

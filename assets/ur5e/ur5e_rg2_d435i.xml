@@ -105,10 +105,19 @@
 
   <worldbody>
     <body name="base" pos="0 0 0" quat="1 0 0 0">
+      <camera name="front" pos="3 0 0.8" xyaxes="0 1 0 0 0 1" fovy="60"/>
+      <body name="front_camera" pos="3 0 0.8" quat="0.5 -0.5 -0.5 0.5">
+        <geom size="0.005 0.005 0.005" type="box" rgba="0 1 0 1" contype="0" conaffinity="0"/>
+      </body>
       <inertial mass="4.0" pos="0 0 0" diaginertia="0.00443333156 0.00443333156 0.0072" />
       <geom mesh="base_0" material="black" class="visual" />
       <geom mesh="base_1" material="jointgray" class="visual" />
       <body name="shoulder_link" pos="0 0 0.163">
+        <camera name="left_shoulder" pos="0 -0.2 0.4" xyaxes="1 0 0 0 0 1" fovy="60"/>
+        <body name="left_shoulder_camera" pos="0 -0.2 0.4" quat="0.70710678 0.70710678 0 0">
+          <geom size="0.005 0.005 0.005" type="box" rgba="0 1 0 1" contype="0" conaffinity="0"/>
+        </body>
+
         <inertial mass="3.7" pos="0 0 0" diaginertia="0.0102675 0.0102675 0.00666" />
         <joint name="shoulder_pan_joint" class="size3" axis="0 0 1" />
         <geom mesh="shoulder_0" material="urblue" class="visual" />
@@ -125,6 +134,10 @@
           <geom class="collision" pos="0 -0.04 0" quat="1 1 0 0" size="0.06 0.06" />
           <geom class="collision" size="0.05 0.2" pos="0 0 0.2" />
           <body name="forearm_link" pos="0 -0.131 0.425">
+            <camera name="right_shoulder" pos="0 0.2 0.3" xyaxes="1 0 0 0 0 1" fovy="60"/>
+            <body name="right_shoulder_camera" pos="0 0.2 0.3" quat="0.70710678 0.70710678 0 0">
+              <geom size="0.005 0.005 0.005" type="box" rgba="0 1 0 1" contype="0" conaffinity="0"/>
+            </body>
             <inertial mass="2.275" pos="0 0 0.196" diaginertia="0.0311796 0.0311796 0.004095" />
             <joint name="elbow_joint" class="size3_limited" />
             <geom mesh="forearm_0" material="urblue" class="visual" />
