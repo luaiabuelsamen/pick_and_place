@@ -1032,7 +1032,7 @@ class MuJoCoParserClass(object):
 
 
 def init_env():
-    xml_path = 'assets/ur5e/scene_ur5e_rg2_d435i_obj.xml'
+    xml_path = '/home/jetson3/luai/pick_and_place/assets/ur5e/scene_ur5e_rg2_d435i_obj.xml'
     env = MuJoCoParserClass(name='UR5e with RG2 gripper', rel_xml_path=xml_path, VERBOSE=True)
 
     # Your existing simulation code...

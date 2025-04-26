@@ -1,17 +1,18 @@
+import sys
+import os
+sys.path.append(os.path.abspath(os.path.join(os.path.dirname(__file__), '..')))
+sys.path.append('/home/jetson3/luai/peract/peract_colab')
 import numpy as np
 import matplotlib.pyplot as plt
 import threading
 import time
 import queue
 from PIL import Image
-import os
+
 import json
 import pickle
-import sys
 from mujoco_parser import MuJoCoParserClass, init_env
 from util import generate_trajectories
-sys.path.append('/home/jetson3/luai/peract/peract_colab')
-
 CAMERAS = ['wrist', 'front', 'left_shoulder', 'right_shoulder']
 IMAGE_SIZE = 128  # Target image size for all cameras
 DATA_PATH = "/home/jetson3/luai/peract/peract_colab/data/colab_dataset/open_drawer/all_variations/episodes"
