@@ -12,7 +12,7 @@ from PIL import Image
 import json
 import pickle
 from mujoco_parser import MuJoCoParserClass, init_env
-from util import generate_trajectories
+from util import generate_trajectories, r2quat
 CAMERAS = ['wrist', 'front', 'left_shoulder', 'right_shoulder']
 IMAGE_SIZE = 128  # Target image size for all cameras
 DATA_PATH = "/home/jetson3/luai/peract/peract_colab/data/colab_dataset/open_drawer/all_variations/episodes"
@@ -79,7 +79,7 @@ def save_image_thread(running_event):
             time.sleep(0.1)
             continue
         
-        run_number, rgb_images, depth_images, pos, tick = image_queue.get(timeout=0.1)
+        run_number, rgb_images, depth_images, joint_angles, pose, vels, gripper_open, tick = image_queue.get(timeout=0.1)
         
         # Initialize run data if not exists
         if run_number not in demo_data:
@@ -87,11 +87,12 @@ def save_image_thread(running_event):
         
         # Initialize timestep data
         demo_data[run_number][tick] = {
-            'pos': list(pos),
-            'gripper_pose': list(pos),
-            'gripper_open': True if tick < 50 or tick >= 350 else False,
-            'joint_positions': list(pos[:6]),
-            'joint_velocities': [0.0] * 6
+            'gripper_pose': list(pose),
+            'gripper_open': gripper_open,
+            'joint_velocities': vels,
+
+            #?
+            'joint_positions': list(joint_angles)
         }
         
         # Define episode directory for this run
@@ -196,21 +197,11 @@ def save_demonstration_data(run_number):
             obs_params[f'{camera}_mask'] = mask_array
             obs_params[f'{camera}_point_cloud'] = pcd_array
         
-        # Add overhead camera (empty)
-        obs_params['overhead_rgb'] = np.zeros((3, IMAGE_SIZE, IMAGE_SIZE), dtype=np.uint8)
-        obs_params['overhead_depth'] = np.zeros((1, IMAGE_SIZE, IMAGE_SIZE), dtype=np.float32)
-        obs_params['overhead_mask'] = np.zeros((1, IMAGE_SIZE, IMAGE_SIZE), dtype=np.int32)
-        obs_params['overhead_point_cloud'] = np.zeros((3, IMAGE_SIZE, IMAGE_SIZE), dtype=np.float32)
         
         # Add robot state
         obs_params['joint_velocities'] = np.array(data.get('joint_velocities', np.zeros(6)), dtype=np.float32)
-        obs_params['joint_positions'] = np.array(data.get('joint_positions', np.zeros(6)), dtype=np.float32)
-        obs_params['joint_forces'] = np.zeros(6, dtype=np.float32)
         obs_params['gripper_open'] = bool(data.get('gripper_open', True))
         obs_params['gripper_pose'] = np.array(data.get('gripper_pose', np.zeros(7)), dtype=np.float32)
-        obs_params['gripper_matrix'] = np.identity(4, dtype=np.float32)
-        obs_params['gripper_joint_positions'] = np.zeros(2, dtype=np.float32)
-        obs_params['gripper_touch_forces'] = np.zeros(2, dtype=np.float32)
         
         # Task state
         obs_params['task_low_dim_state'] = np.zeros(1, dtype=np.float32)
@@ -230,18 +221,35 @@ def save_demonstration_data(run_number):
             obs_params['misc'][f'{camera}_camera_near'] = 0.01
             obs_params['misc'][f'{camera}_camera_far'] = 10.0
         
+
+
+
+        # (UNUSED, but not deleted)
+        # Masks are deleted
+        obs_params['overhead_rgb'] = np.zeros((3, IMAGE_SIZE, IMAGE_SIZE), dtype=np.uint8)
+        obs_params['overhead_depth'] = np.zeros((1, IMAGE_SIZE, IMAGE_SIZE), dtype=np.float32)
+        obs_params['overhead_mask'] = np.zeros((1, IMAGE_SIZE, IMAGE_SIZE), dtype=np.int32)
+        obs_params['overhead_point_cloud'] = np.zeros((3, IMAGE_SIZE, IMAGE_SIZE), dtype=np.float32)
+
+        obs_params['joint_positions'] = np.array(data.get('joint_positions', np.zeros(6)), dtype=np.float32)
+        obs_params['joint_forces'] = np.zeros(6, dtype=np.float32)
+        obs_params['gripper_matrix'] = np.identity(4, dtype=np.float32)
+        obs_params['gripper_joint_positions'] = np.zeros(2, dtype=np.float32)
+        obs_params['gripper_touch_forces'] = np.zeros(2, dtype=np.float32)
+
         # Create observation
         obs = Observation(**obs_params)
+
         obs.ignore_collisions = np.bool_(False)
         objects_to_delete = [
             'front_mask', 
             'left_shoulder_mask',
+            'right_shoulder_mask',
+            'wrist_mask',
             'overhead_depth', 
             'overhead_mask', 
             'overhead_point_cloud', 
             'overhead_rgb',
-            'right_shoulder_mask',
-            'wrist_mask'
         ]
         
         # Delete each object if it exists in the observation
@@ -280,7 +288,7 @@ def save_demonstration_data(run_number):
 
 running_event = threading.Event()
 running_event.set()
-run_number = 11
+run_number = 1
 image_queue = queue.Queue()
 
 # Start image processing thread
@@ -323,10 +331,14 @@ try:
                     depth_images.append(depth_img)
                 
                 # Get robot position
-                pos = env.get_q([0, 1, 2, 3, 4, 5, 6])
-                
+                joint_angles = env.get_q([0, 1, 2, 3, 4, 5])
+                gripper_open = env.get_q([6])[0] + 0.7 < 0
+                p,R = env.get_pR_body(body_name='tcp_link')
+                q = r2quat(R)
+                pose = np.concatenate([p, q])
+                vels = env.get_qvel_joints(['shoulder_pan_joint', 'shoulder_lift_joint', 'elbow_joint', 'wrist_1_joint', 'wrist_2_joint', 'wrist_3_joint'])
                 # Add to queue for processing
-                image_queue.put((run_number, rgb_images, depth_images, pos, t))
+                image_queue.put((run_number, rgb_images, depth_images, joint_angles, pose, vels, gripper_open, t))
                 t += 1
             
             # Step simulation
@@ -340,7 +352,8 @@ try:
         
         run_number += 1
         env.close_viewer()
-        break
+        if run_number == 5:
+            break
 
 except KeyboardInterrupt:
     print("\nMain thread interrupted. Stopping worker thread...")
@@ -351,7 +364,3 @@ finally:
     # Save any remaining demonstrations
     for run_number in demo_data:
         save_demonstration_data(run_number)
-    
-    # Save complete data to JSON
-    with open('data.json', 'w') as json_file:
-        json.dump(demo_data, json_file, indent=4)

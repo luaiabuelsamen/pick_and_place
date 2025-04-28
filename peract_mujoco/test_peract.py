@@ -320,7 +320,7 @@ def run_live_peract(model_path):
 
 if __name__ == "__main__":
     # Path to saved model
-    model_path = '/home/jetson3/luai/pick_and_place/peract_mujoco/peract_model_components.pth'
+    model_path = '/home/jetson3/luai/peract/peract_model_components.pth'
     
     # Run live inference
     run_live_peract(model_path)
