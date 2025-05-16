@@ -1056,9 +1056,11 @@ def init_env():
     platform_xyz = np.random.uniform([0.6, -0.3, 0.81], [1.0, 0.3, 0.81])
     env.model.body('red_platform').pos = platform_xyz
 
-    q_init_upright = np.array([0, -np.pi/2, 0, 0, np.pi/2, 0])
+    q_init_upright = np.array([0, -np.pi/2, 5*np.pi/10, 0, np.pi/2, 0])
     env.reset()
     env.forward(q=q_init_upright, joint_idxs=env.idxs_forward)
     env.init_viewer(viewer_title='UR5e with RG2 gripper', viewer_width=1200, viewer_height=800, viewer_hide_menus=True)
     env.update_viewer(azimuth=66.08, distance=3.0, elevation=-50, lookat=[0.4, 0.18, 0.71], VIS_TRANSPARENT=False, VIS_CONTACTPOINT=False, contactwidth=0.05, contactheight=0.05, contactrgba=np.array([1, 0, 0, 1]), VIS_JOINT=True, jointlength=0.25, jointwidth=0.05, jointrgba=[0.2, 0.6, 0.8, 0.6])
+    # while True:
+    #     env.render()
     return env, obj_names, q_init_upright, platform_xyz

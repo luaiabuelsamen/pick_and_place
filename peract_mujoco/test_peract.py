@@ -12,7 +12,7 @@ sys.path.append('/home/jetson3/luai/peract')
 
 # Import MuJoCo environment
 from mujoco_parser import MuJoCoParserClass, init_env
-from util import  execute_peract_action
+from util import execute_peract_action
 # Import necessary PerAct components
 from arm.utils import stack_on_channel, discrete_euler_to_quaternion
 from arm.optim.lamb import Lamb
@@ -24,13 +24,10 @@ IMAGE_SIZE = 128
 LOW_DIM_SIZE = 4
 VOXEL_SIZES = [100]
 NUM_LATENTS = 512
-SCENE_BOUNDS = [-0.3, -0.5, 0.6, 0.7, 0.5, 1.6]
+SCENE_BOUNDS = [-5, -5, -5, 5, 5, 5]
 ROTATION_RESOLUTION = 5
 DEVICE = torch.device("cuda" if torch.cuda.is_available() else "cpu")
-
-def _norm_rgb(x):
-    """Normalize RGB image tensor to [-1, 1]"""
-    return (x.float() / 255.0) * 2.0 - 1.0
+DEPTH_SCALE = 2**24 - 1  # Same as in RLBench
 
 def process_rgb_image(rgb_img):
     """Process RGB image for model input"""
@@ -50,32 +47,125 @@ def process_rgb_image(rgb_img):
     
     return rgb_array
 
-def process_depth_image(depth_img):
-    """Process depth image for model input"""
+def process_depth_image(depth_img, near=0.01, far=10.0):
+    """
+    Process depth image preserving metric values
+    
+    Args:
+        depth_img: Depth image from MuJoCo
+        near: Near plane distance in meters
+        far: Far plane distance in meters
+        
+    Returns:
+        Depth array in format (1, H, W) with metric values
+    """
+    # Convert PIL to numpy if needed
     if isinstance(depth_img, Image.Image):
         depth_img = np.array(depth_img)
     
+    # Extract single channel depth
     if len(depth_img.shape) == 3:
         depth_img_2d = depth_img[:, :, 0]
     else:
         depth_img_2d = depth_img
     
+    # Resize to target size if needed
     if depth_img_2d.shape[0] != IMAGE_SIZE or depth_img_2d.shape[1] != IMAGE_SIZE:
         depth_pil = Image.fromarray(depth_img_2d)
-        depth_pil = depth_pil.resize((IMAGE_SIZE, IMAGE_SIZE))
+        depth_pil = depth_pil.resize((IMAGE_SIZE, IMAGE_SIZE), Image.NEAREST)
         depth_img_2d = np.array(depth_pil)
     
-    if np.max(depth_img_2d) > 0:
-        normalized_depth = depth_img_2d / np.max(depth_img_2d)
-    else:
-        normalized_depth = np.zeros_like(depth_img_2d, dtype=np.float32)
+    # No need to normalize - just make sure it's in the right range
+    # MuJoCo typically provides depth in 0-1 range
+    if np.max(depth_img_2d) > 1.0:
+        depth_img_2d = depth_img_2d / np.max(depth_img_2d)
     
-    depth_array = normalized_depth.reshape(1, IMAGE_SIZE, IMAGE_SIZE)
+    # Convert normalized depth to metric depth using near and far planes
+    metric_depth = near + depth_img_2d * (far - near)
+    
+    # Reshape to required format (1, H, W) for point cloud computation
+    depth_array = metric_depth.reshape(1, IMAGE_SIZE, IMAGE_SIZE)
+    
     return depth_array
 
-def create_empty_pcd(shape=(IMAGE_SIZE, IMAGE_SIZE)):
-    """Create an empty point cloud with the right format"""
-    return np.zeros((3, shape[0], shape[1]), dtype=np.float32)
+def depth_to_point_cloud(depth_img, camera_intrinsics, camera_extrinsics):
+    """
+    Convert depth image to point cloud using camera parameters
+    
+    This manually implements the functionality from VisionSensor.pointcloud_from_depth_and_camera_params
+    """
+    # Ensure depth image is 2D
+    if len(depth_img.shape) == 3:
+        depth_img = depth_img[0]  # Take first channel if it's (1, H, W)
+    
+    height, width = depth_img.shape
+    
+    # Create pixel coordinate grid
+    u, v = np.meshgrid(np.arange(width), np.arange(height))
+    u = u.reshape(-1)
+    v = v.reshape(-1)
+    z = depth_img.reshape(-1)
+    
+    # Filter invalid depths
+    valid = z > 0.001
+    u, v, z = u[valid], v[valid], z[valid]
+    
+    # Convert to normalized device coordinates
+    x = (u - camera_intrinsics[0, 2]) / camera_intrinsics[0, 0] * z
+    y = (v - camera_intrinsics[1, 2]) / camera_intrinsics[1, 1] * z
+    
+    # Create point cloud in camera coordinates
+    points_camera = np.vstack([x, y, z, np.ones_like(z)])
+    
+    # Transform to world coordinates
+    points_world = camera_extrinsics @ points_camera
+    
+    # Return points in the expected format (3, H*W)
+    point_cloud = np.zeros((3, height*width))
+    valid_indices = np.arange(len(u))
+    point_cloud[:, valid_indices] = points_world[:3, :]
+    
+    # Reshape to match expected format (3, H, W)
+    pcd_reshaped = point_cloud.reshape(3, height, width)
+    
+    return pcd_reshaped
+
+def create_camera_intrinsics(fovy, width, height):
+    """Calculate camera intrinsics matrix from field of view"""
+    # Convert fovy from degrees to radians
+    fovy_rad = np.deg2rad(fovy)
+    
+    # Calculate focal length
+    f = height / (2 * np.tan(fovy_rad / 2))
+    
+    # Create intrinsics matrix
+    K = np.array([
+        [f, 0, width/2],
+        [0, f, height/2],
+        [0, 0, 1]
+    ], dtype=np.float32)
+    
+    return K
+
+def get_camera_extrinsics(env, camera_name):
+    """Get camera extrinsics matrix from MuJoCo environment"""
+    # Get camera position and orientation from MuJoCo
+    p_cam, R_cam = env.get_pR_body(body_name=camera_name)
+    
+    # Create extrinsics matrix (4x4 transformation matrix)
+    extrinsics = np.eye(4, dtype=np.float32)
+    extrinsics[:3, :3] = R_cam
+    extrinsics[:3, 3] = p_cam
+    
+    # Camera axis correction (as needed for MuJoCo)
+    camera_axis_correction = np.array([
+        [1.0, 0.0, 0.0, 0.0],
+        [0.0, -1.0, 0.0, 0.0],
+        [0.0, 0.0, -1.0, 0.0],
+        [0.0, 0.0, 0.0, 1.0]
+    ])
+    
+    return extrinsics @ camera_axis_correction
 
 def load_peract_model(model_path):
     """Load the saved PerAct model components"""
@@ -137,7 +227,7 @@ def load_peract_model(model_path):
         traceback.print_exc()
         return None
 
-def prepare_live_observations(rgb_images, depth_images, robot_pos, lang_goal):
+def prepare_live_observations(env, rgb_images, depth_images, robot_pos, lang_goal):
     """Prepare observations from live MuJoCo simulation for PerAct model"""
     # Create batch dictionary
     batch = {}
@@ -154,31 +244,59 @@ def prepare_live_observations(rgb_images, depth_images, robot_pos, lang_goal):
     
     batch['low_dim_state'] = torch.from_numpy(low_dim_state).float()
     
-    # Process RGB and depth for each camera
+    # Dictionary for camera parameters
+    camera_parameters = {}
+    
+    # Camera body names mapping - for getting extrinsics
+    camera_bodies = {
+        'wrist': 'camera_center',
+        'front': 'front_camera',
+        'left_shoulder': 'left_shoulder_camera',
+        'right_shoulder': 'right_shoulder_camera'
+    }
+    
+    # Camera FOVs - for getting intrinsics
+    camera_fovs = {
+        'wrist': 80,
+        'front': 60,
+        'left_shoulder': 80,
+        'right_shoulder': 60
+    }
+    
+    # Process each camera
     for i, camera in enumerate(CAMERAS):
-        # Process RGB
+        # Process RGB image
         rgb_array = process_rgb_image(rgb_images[i])
         rgb_tensor = torch.from_numpy(rgb_array).float().unsqueeze(0).unsqueeze(0)
         batch[f'{camera}_rgb'] = rgb_tensor
         
-        # Process depth
-        depth_array = process_depth_image(depth_images[i])
+        # Process depth image with proper metric depth values
+        depth_array = process_depth_image(depth_images[i], near=0.01, far=10.0)
         depth_tensor = torch.from_numpy(depth_array).float().unsqueeze(0).unsqueeze(0)
         batch[f'{camera}_depth'] = depth_tensor
         
-        # Create point cloud (in real usage, this would be computed from depth)
-        # For now, use placeholder
-        pcd_array = create_empty_pcd()
-        pcd_tensor = torch.from_numpy(pcd_array).float().unsqueeze(0).unsqueeze(0)
+        # Get camera intrinsics based on FOV
+        fovy = camera_fovs[camera]
+        intrinsics = create_camera_intrinsics(fovy, IMAGE_SIZE, IMAGE_SIZE)
+        intrinsics_tensor = torch.from_numpy(intrinsics).float().unsqueeze(0).unsqueeze(0)
+        batch[f'{camera}_camera_intrinsics'] = intrinsics_tensor
+        
+        # Get camera extrinsics from the environment
+        camera_body = camera_bodies[camera]
+        extrinsics = get_camera_extrinsics(env, camera_body)
+        extrinsics_tensor = torch.from_numpy(extrinsics).float().unsqueeze(0).unsqueeze(0)
+        batch[f'{camera}_camera_extrinsics'] = extrinsics_tensor
+        
+        # Generate point cloud from depth and camera parameters
+        point_cloud = depth_to_point_cloud(depth_array, intrinsics, extrinsics)
+        pcd_tensor = torch.from_numpy(point_cloud).float().unsqueeze(0).unsqueeze(0)
         batch[f'{camera}_point_cloud'] = pcd_tensor
         
-        # Add empty camera extrinsics and intrinsics
-        batch[f'{camera}_camera_extrinsics'] = torch.eye(4).float().unsqueeze(0).unsqueeze(0)
-        batch[f'{camera}_camera_intrinsics'] = torch.tensor([
-            [IMAGE_SIZE, 0.0, IMAGE_SIZE/2],
-            [0.0, IMAGE_SIZE, IMAGE_SIZE/2],
-            [0.0, 0.0, 1.0]
-        ]).float().unsqueeze(0).unsqueeze(0)
+        # Store params for debugging
+        camera_parameters[camera] = {
+            'intrinsics': intrinsics,
+            'extrinsics': extrinsics
+        }
     
     # Add language embedding placeholder (this would be calculated in the model)
     # In real scenario, this would use CLIP to encode the language
@@ -198,7 +316,16 @@ def prepare_live_observations(rgb_images, depth_images, robot_pos, lang_goal):
     # Move all tensors to device
     batch = {k: v.to(DEVICE) if isinstance(v, torch.Tensor) else v for k, v in batch.items()}
     
-    return batch
+    # Debug info about point clouds
+    print("\nPoint Cloud Statistics:")
+    for camera in CAMERAS:
+        pcd_vals = batch[f'{camera}_point_cloud']
+        non_zero = torch.count_nonzero(pcd_vals).item()
+        total = pcd_vals.numel()
+        print(f"  {camera}: Shape {pcd_vals.shape}, Non-zero values: {non_zero}/{total} ({non_zero/total*100:.2f}%)")
+        print(f"  {camera}: Min {pcd_vals.min().item():.4f}, Max {pcd_vals.max().item():.4f}")
+    
+    return batch, camera_parameters
 
 def run_live_peract(model_path):
     """Run live PerAct model inference with MuJoCo environment"""
@@ -212,7 +339,7 @@ def run_live_peract(model_path):
     print("MuJoCo environment initialized")
     
     # Set language goal
-    lang_goal = "open the bottom drawer"  # Default goal
+    lang_goal = "Put the green block on the red square"  # Default goal
     
     try:
         iteration = 0
@@ -243,8 +370,11 @@ def run_live_peract(model_path):
                 p_ego, R_ego = cameras_pr[camera]
                 p_trgt = camera_targets[camera]
                 
+                # Use the correct FOV for each camera
+                fovy = 80 if camera == 'wrist' else 60
+                
                 rgb_img, depth_img, pcd, xyz_img = env.get_egocentric_rgb_depth_pcd(
-                    p_ego=p_ego, p_trgt=p_trgt, rsz_rate=None, fovy=45, BACKUP_AND_RESTORE_VIEW=True)
+                    p_ego=p_ego, p_trgt=p_trgt, rsz_rate=None, fovy=fovy, BACKUP_AND_RESTORE_VIEW=True)
                 
                 rgb_images.append(rgb_img)
                 depth_images.append(depth_img)
@@ -252,59 +382,46 @@ def run_live_peract(model_path):
             # Get robot position
             robot_pos = env.get_q([0, 1, 2, 3, 4, 5, 6])
             
-            # Prepare batch for inference
-            batch = prepare_live_observations(rgb_images, depth_images, robot_pos, lang_goal)
+            # Prepare batch for inference with correct camera parameters
+            batch, camera_params = prepare_live_observations(env, rgb_images, depth_images, robot_pos, lang_goal)
             
             # Run inference
             print("\nRunning PerAct inference...")
-            try:
-                with torch.no_grad():
-                    update_dict = peract_agent.update(iteration, batch, backprop=False)
-                
-                # Extract predictions
-                trans_coords = update_dict['pred_action']['trans'][0].cpu().numpy()
-                continuous_trans = update_dict['pred_action']['continuous_trans'][0].cpu().numpy()
-                rot_and_grip = update_dict['pred_action']['rot_and_grip'][0].cpu().numpy()
-                continuous_quat = discrete_euler_to_quaternion(
-                    rot_and_grip[:3], 
-                    resolution=peract_agent._rotation_resolution
-                )
-                gripper_open = bool(rot_and_grip[3])
-                ignore_collision = bool(update_dict['pred_action']['collision'][0][0].cpu().numpy())
-                
-                # Print predictions
-                print("\nPerAct Predictions:")
-                print(f"Language goal: '{lang_goal}'")
-                print(f"Translation (discrete): {trans_coords}")
-                print(f"Translation (continuous): {continuous_trans}")
-                print(f"Rotation (discrete euler angles): {rot_and_grip[:3]}")
-                print(f"Rotation (continuous quaternion): {continuous_quat}")
-                print(f"Gripper open: {gripper_open}")
-                print(f"Ignore collision: {ignore_collision}")
-                
-                # Update iteration counter
-                iteration += 1
-                
-                # Optional: Step the simulation with the predicted action
-                # If you want to execute the action in MuJoCo, you'd convert to joint angles here
-                # env.step(...)
-                final_q = execute_peract_action(
-                        env, 
-                        continuous_trans, 
-                        continuous_quat, 
-                        gripper_open
-                    )
-                
-            except Exception as e:
-                print(f"Error during inference: {e}")
-                import traceback
-                traceback.print_exc()
+            with torch.no_grad():
+                update_dict = peract_agent.update(iteration, batch, backprop=False)
             
-            # Display the scene
-            pos = env.get_q([0, 1, 2, 3, 4, 5])
-            env.forward()
+            # Extract predictions
+            trans_coords = update_dict['pred_action']['trans'][0].cpu().numpy()
+            continuous_trans = update_dict['pred_action']['continuous_trans'][0].cpu().numpy()
+            rot_and_grip = update_dict['pred_action']['rot_and_grip'][0].cpu().numpy()
+            continuous_quat = discrete_euler_to_quaternion(
+                rot_and_grip[:3], 
+                resolution=peract_agent._rotation_resolution
+            )
+            gripper_open = bool(rot_and_grip[3])
+            ignore_collision = bool(update_dict['pred_action']['collision'][0][0].cpu().numpy())
+            
+            # Print predictions
+            print("\nPerAct Predictions:")
+            print(f"Language goal: '{lang_goal}'")
+            print(f"Translation (discrete): {trans_coords}")
+            print(f"Translation (continuous): {continuous_trans}")
+            print(f"Rotation (discrete euler angles): {rot_and_grip[:3]}")
+            print(f"Rotation (continuous quaternion): {continuous_quat}")
+            print(f"Gripper open: {gripper_open}")
+            print(f"Ignore collision: {ignore_collision}")
+            
+            # Update iteration counter
+            iteration += 1
+            
+            # Execute the predicted action
+            execute_peract_action(
+                env, 
+                continuous_trans, 
+                continuous_quat, 
+                gripper_open
+            )
             env.render()
-            time.sleep(1.0)  # Frame rate for better visualization
             
             # # Ask to continue
             # if input("Continue (y/n)? ").lower() != 'y':

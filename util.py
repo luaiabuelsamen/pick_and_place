@@ -4,6 +4,7 @@ import shapely as sp # handle polygon
 from shapely import Polygon,LineString,Point # handle polygons
 from scipy.spatial.distance import cdist
 
+
 def execute_peract_action(env, continuous_trans, continuous_quat, gripper_open):
     """Execute the predicted action in MuJoCo using IK"""
     # Get current robot state
@@ -18,14 +19,12 @@ def execute_peract_action(env, continuous_trans, continuous_quat, gripper_open):
     print(f"Executing move to position: {p_trgt}, orientation: {continuous_quat}")
     print(f"Gripper state: {'Open' if gripper_open else 'Closed'}")
     
-    q_ik_pregrasp = env.solve_ik(body_name='tcp_link', p_trgt=p_trgt, R_trgt=R_trgt, IK_P=True, IK_R=True, q_init=current_q, idxs_forward=env.idxs_forward, idxs_jacobian=env.idxs_jacobian, RESET=False, DO_RENDER=False, render_every=1, th=1 * np.pi / 180.0, err_th=1e-2, w_weight=0.5)
+    q_ik_pregrasp = env.solve_ik(body_name='tcp_link', p_trgt=p_trgt, R_trgt=R_trgt, IK_P=True, IK_R=False, q_init=current_q, idxs_forward=env.idxs_forward, idxs_jacobian=env.idxs_jacobian, RESET=False, DO_RENDER=False, render_every=1, th=1 * np.pi / 180.0, err_th=1e-2, w_weight=0.5)
     
     # Generate trajectory to pre-grasp position
     q_traj_combined = np.vstack([current_q, q_ik_pregrasp])
     _, q_traj_pregrasp = get_interp_const_vel_traj(q_traj_combined, vel=np.radians(45), HZ=env.HZ)
     
-    # Execute pre-grasp trajectory
-    print("Moving to pre-grasp position...")
     for q in q_traj_pregrasp:
         # Append current gripper state
         gripper_val = gripper_open # Use current gripper state during approach

@@ -107,17 +107,12 @@
     <body name="base" pos="0 0 0" quat="1 0 0 0">
       <camera name="front" pos="3 0 0.8" xyaxes="0 1 0 0 0 1" fovy="60"/>
       <body name="front_camera" pos="3 0 0.8" quat="0.5 -0.5 -0.5 0.5">
-        <geom size="0.005 0.005 0.005" type="box" rgba="0 1 0 1" contype="0" conaffinity="0"/>
+        <geom size="0.001 0.001 0.001" type="box" rgba="0 1 0 1" contype="0" conaffinity="0"/>
       </body>
       <inertial mass="4.0" pos="0 0 0" diaginertia="0.00443333156 0.00443333156 0.0072" />
       <geom mesh="base_0" material="black" class="visual" />
       <geom mesh="base_1" material="jointgray" class="visual" />
       <body name="shoulder_link" pos="0 0 0.163">
-        <camera name="left_shoulder" pos="0 -0.2 0.4" xyaxes="1 0 0 0 0 1" fovy="60"/>
-        <body name="left_shoulder_camera" pos="0 -0.2 0.4" quat="0.70710678 0.70710678 0 0">
-          <geom size="0.005 0.005 0.005" type="box" rgba="0 1 0 1" contype="0" conaffinity="0"/>
-        </body>
-
         <inertial mass="3.7" pos="0 0 0" diaginertia="0.0102675 0.0102675 0.00666" />
         <joint name="shoulder_pan_joint" class="size3" axis="0 0 1" />
         <geom mesh="shoulder_0" material="urblue" class="visual" />
@@ -125,6 +120,11 @@
         <geom mesh="shoulder_2" material="jointgray" class="visual" />
         <geom class="collision" size="0.06 0.06" pos="0 0 -0.04" />
         <body name="upper_arm_link" pos="0 0.138 0" quat="1 0 1 0">
+          <body name="left_shoulder_camera" pos="0 0 1.0" quat="0 0 -1 0">
+            <geom size="0.001 0.001 0.001" pos="0 0. 0.0" contype="0" conaffinity="0"
+              type="box" rgba="1.00 0.00 0.0 1" />
+            <camera name="left_shoulder" pos="0 0 0" xyaxes="1 0 0 0 -1 0" fovy="80" />
+          </body>
           <inertial mass="8.393" pos="0 0 0.2125" diaginertia="0.133886 0.133886 0.0151074" />
           <joint name="shoulder_lift_joint" class="size3" />
           <geom mesh="upperarm_0" material="linkgray" class="visual" />
@@ -134,10 +134,6 @@
           <geom class="collision" pos="0 -0.04 0" quat="1 1 0 0" size="0.06 0.06" />
           <geom class="collision" size="0.05 0.2" pos="0 0 0.2" />
           <body name="forearm_link" pos="0 -0.131 0.425">
-            <camera name="right_shoulder" pos="0 0.2 0.3" xyaxes="1 0 0 0 0 1" fovy="60"/>
-            <body name="right_shoulder_camera" pos="0 0.2 0.3" quat="0.70710678 0.70710678 0 0">
-              <geom size="0.005 0.005 0.005" type="box" rgba="0 1 0 1" contype="0" conaffinity="0"/>
-            </body>
             <inertial mass="2.275" pos="0 0 0.196" diaginertia="0.0311796 0.0311796 0.004095" />
             <joint name="elbow_joint" class="size3_limited" />
             <geom mesh="forearm_0" material="urblue" class="visual" />
@@ -147,6 +143,10 @@
             <geom class="collision" pos="0 0.08 0" quat="1 1 0 0" size="0.055 0.06" />
             <geom class="collision" size="0.038 0.19" pos="0 0 0.2" />
             <body name="wrist_1_link" pos="0 0 0.392" quat="1 0 1 0">
+                <body name="right_shoulder_camera" pos="0 0.2 -0.5" quat="0 0 0 -1">
+                  <camera name="right_shoulder" pos="0 0 0" xyaxes="1 0 0 0 -1 0" fovy="60"/>
+                  <geom size="0.001 0.001 0.001" type="box" rgba="0 1 0 1" contype="0" conaffinity="0"/>
+                </body>
               <inertial mass="1.219" pos="0 0.127 0" diaginertia="0.0025599 0.0025599 0.0021942" />
               <joint name="wrist_1_joint" class="size1" />
               <geom mesh="wrist1_0" material="black" class="visual" />
@@ -205,7 +205,7 @@
 
                       <!-- Camera center -->
                       <body name="camera_center" pos="0 -0.09 0.01">
-                        <geom size="0.005 0.005 0.005" pos="0 0. 0." contype="0" conaffinity="0"
+                        <geom size="0.001 0.001 0.001" pos="0 0. 0." contype="0" conaffinity="0"
                           type="box" rgba="1.00 0.00 0.0 1" />
                         <camera name="egocentric" pos="0 0 0" xyaxes="1 0 0 0 -1 0" fovy="80" />
                       </body>
