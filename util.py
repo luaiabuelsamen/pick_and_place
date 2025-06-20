@@ -108,12 +108,10 @@ def generate_trajectories(env, obj_names, q_init_upright, platform_xyz):
     q_traj_place_combined = np.vstack([q_ik_postpick, q_ik_preplace, q_ik_place])
     times_place, q_traj_place = get_interp_const_vel_traj(q_traj_place_combined, vel=np.radians(90), HZ=env.HZ)
 
-    gripper_closed_steps_0 = np.tile(np.append(q_traj[0], 1), (50, 1))
-    gripper_closed_steps_1 = np.tile(np.append(q_traj[-1], 0.5), (150, 1))
-    gripper_closed_steps_2 = np.tile(np.append(q_traj_place[-1], 1), (150, 1))
+    gripper_closed_steps_1 = np.tile(np.append(q_traj[-1], 0.5), (100, 1))
+    gripper_closed_steps_2 = np.tile(np.append(q_traj_place[-1], 1), (100, 1))
 
     q_traj_combined = np.vstack([
-        gripper_closed_steps_0,
         np.hstack([q_traj, np.ones((q_traj.shape[0], 1))]),
         gripper_closed_steps_1,
         np.hstack([q_traj_place, np.ones((q_traj_place.shape[0], 1))*0.5]),

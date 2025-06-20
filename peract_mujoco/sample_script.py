@@ -26,17 +26,10 @@ CAMERA_BODIES = {
     'right_shoulder': 'right_shoulder_camera'
 }
 
-# Camera FOVs from MuJoCo model - update these values based on your XML
-CAMERA_FOVS = {
-    'wrist': 80,         # Assuming 80 from the advice
-    'front': 60,         # Assuming 60 from the advice
-    'left_shoulder': 80, # Assuming 80 from the advice
-    'right_shoulder': 60 # Assuming 60 from the advice
-}
-
 # Near and far planes from MuJoCo model
 NEAR_PLANE = 0.01  # From XML
 FAR_PLANE = 10.0   # From XML
+NUM_DEMOS = 2
 DATA_PATH = "/home/jetson3/luai/peract/peract_colab/data/colab_dataset/open_drawer/all_variations/episodes"
 
 demo_data = {}
@@ -45,6 +38,14 @@ def ensure_dir(directory):
     """Create directory if it doesn't exist"""
     if not os.path.exists(directory):
         os.makedirs(directory)
+
+def save_pointcloud_data(pcd, filepath):
+    """Save point cloud data in efficient format"""
+    np.save(filepath, pcd.astype(np.float32))
+
+def load_pointcloud_data(filepath):
+    """Load point cloud data"""
+    return np.load(filepath)
 
 def process_rgb_image(rgb_img):
     """Process RGB image to match demo quality/size"""
@@ -58,18 +59,6 @@ def process_rgb_image(rgb_img):
     return rgb_img
 
 def process_depth_image(depth_img, near=0.01, far=10.0):
-    """
-    Process depth image to match RLBench format
-    
-    Args:
-        depth_img: Input depth image from MuJoCo (either as numpy array or PIL Image)
-        near: Near plane distance in meters
-        far: Far plane distance in meters
-    
-    Returns:
-        depth_array: Depth array in format expected by RLBench (1, H, W)
-    """
-    # Convert PIL to numpy if needed
     if isinstance(depth_img, Image.Image):
         depth_img = np.array(depth_img)
     
@@ -79,36 +68,20 @@ def process_depth_image(depth_img, near=0.01, far=10.0):
     else:
         depth_img_2d = depth_img
     
+    depth_img_2d = np.clip(depth_img_2d, near, far)
+    
     # Resize to target size if needed
     if depth_img_2d.shape[0] != IMAGE_SIZE or depth_img_2d.shape[1] != IMAGE_SIZE:
         depth_pil = Image.fromarray(depth_img_2d)
         depth_pil = depth_pil.resize((IMAGE_SIZE, IMAGE_SIZE), Image.NEAREST)
         depth_img_2d = np.array(depth_pil)
     
-    # Normalize MuJoCo depth to 0-1 range if it isn't already
-    if np.max(depth_img_2d) > 1.0:
-        depth_img_2d = depth_img_2d / np.max(depth_img_2d)
-    
-    # Convert from normalized 0-1 to actual metric depth
-    metric_depth = near + depth_img_2d * (far - near)
-    
     # Reshape to RLBench format (1, H, W)
-    depth_array = metric_depth.reshape(1, IMAGE_SIZE, IMAGE_SIZE)
+    depth_array = depth_img_2d.reshape(1, IMAGE_SIZE, IMAGE_SIZE)
     
     return depth_array
 
 def image_to_float_array(image, scale_factor=None):
-    """
-    Convert a depth image to a float array, scaling by the provided factor.
-    This mimics RLBench's function for encoding/decoding depth images.
-    
-    Args:
-        image: PIL Image or numpy array
-        scale_factor: Value to scale by (default is 2**24 - 1)
-        
-    Returns:
-        Float array of values between 0 and 1
-    """
     if scale_factor is None:
         scale_factor = 2**24 - 1  # Default used by RLBench
         
@@ -133,17 +106,6 @@ def image_to_float_array(image, scale_factor=None):
     return float_array
 
 def float_array_to_rgb(float_array, scale_factor=None):
-    """
-    Convert a float array to an RGB image by scaling and splitting into channels.
-    This is the inverse of image_to_float_array.
-    
-    Args:
-        float_array: Numpy array of float values between 0 and 1
-        scale_factor: Value to scale by (default is 2**24 - 1)
-        
-    Returns:
-        RGB image as a numpy array
-    """
     if scale_factor is None:
         scale_factor = 2**24 - 1  # Default used by RLBench
         
@@ -160,15 +122,29 @@ def float_array_to_rgb(float_array, scale_factor=None):
     
     return rgb_image
 
-# Update the save_image_thread function to correctly save depth images
+def get_camera_extrinsics(env, camera_body_name):
+    """Get camera extrinsics in the format expected by RLBench"""
+    p_cam, R_cam = env.get_pR_body(camera_body_name)
+    
+    # Create transformation matrix (camera pose in world frame)
+    T_world_cam = np.eye(4, dtype=np.float32)
+    T_world_cam[:3, :3] = R_cam
+    T_world_cam[:3, 3] = p_cam
+    
+    # RLBench expects extrinsics as world-to-camera transform
+    T_cam_world = np.linalg.inv(T_world_cam)
+    
+    return T_cam_world
+
 def save_image_thread(running_event):
-    """Thread function to save images from queue"""
+    """Thread function to save images AND point clouds from queue"""
     while running_event.is_set() or not image_queue.empty():
         if image_queue.empty():
             time.sleep(0.1)
             continue
         
-        run_number, rgb_images, depth_images, joint_angles, pose, vels, gripper_open, tick, camera_params = image_queue.get(timeout=0.1)
+        # Now expects pcds in the queue
+        run_number, rgb_images, depth_images, pcds, joint_angles, pose, vels, gripper_open, tick, camera_params = image_queue.get(timeout=0.1)
         
         # Initialize run data if not exists
         if run_number not in demo_data:
@@ -191,21 +167,33 @@ def save_image_thread(running_event):
         
         # Process and save for each camera
         for camera_idx, camera in enumerate(CAMERAS):
-            # Create directories if they don't exist
-            for data_type in ['rgb', 'depth', 'mask']:
+            # Create directories if they don't exist - Added pointcloud directory
+            for data_type in ['rgb', 'depth', 'mask', 'pointcloud']:
                 ensure_dir(os.path.join(episode_dir, f"{camera}_{data_type}"))
             
             # Process and save RGB image
             rgb_img = process_rgb_image(rgb_images[camera_idx])
             rgb_path = os.path.join(episode_dir, f"{camera}_rgb/{tick}.png")
-            rgb_img.save(rgb_path, quality=85)  # Reduced quality to match demo
+            rgb_img.save(rgb_path, quality=85)
             demo_data[run_number][tick][f'{camera}_rgb'] = rgb_path
-            
+                        
+            # Get original depth size for proper intrinsics
+            original_depth = depth_images[camera_idx]
+            if len(original_depth.shape) == 3:
+                orig_h, orig_w = original_depth.shape[:2]
+            else:
+                orig_h, orig_w = original_depth.shape
+
             # Process depth image to get properly formatted metric depth
-            depth_array = process_depth_image(depth_images[camera_idx], NEAR_PLANE, FAR_PLANE)
-            
+            depth_array = process_depth_image(original_depth, NEAR_PLANE, FAR_PLANE)
+
             # Store the metric depth for later use in observations
             demo_data[run_number][tick][f'{camera}_depth_metric'] = depth_array
+
+            # Calculate CORRECTED intrinsics for the RESIZED depth image
+            fovy = 45
+            resized_intrinsics = calculate_intrinsics(fovy, IMAGE_SIZE, IMAGE_SIZE)
+            demo_data[run_number][tick][f'{camera}_intrinsics_resized'] = resized_intrinsics
             
             # Now convert the metric depth back to normalized depth for storage
             normalized_depth = (depth_array[0] - NEAR_PLANE) / (FAR_PLANE - NEAR_PLANE)
@@ -221,21 +209,49 @@ def save_image_thread(running_event):
             # Store the path to the depth PNG
             demo_data[run_number][tick][f'{camera}_depth'] = depth_png_path
             
+            # NEW: Save the correct point cloud directly
+            pcd_path = os.path.join(episode_dir, f"{camera}_pointcloud/{tick}.npy")
+            save_pointcloud_data(pcds[camera_idx], pcd_path)
+            demo_data[run_number][tick][f'{camera}_pointcloud'] = pcd_path
+            
             # Create and save empty mask
             mask_array = create_empty_mask()
             mask_path = os.path.join(episode_dir, f"{camera}_mask/{tick}.png")
             mask_png = Image.fromarray(mask_array[0].astype(np.uint8))
             mask_png.save(mask_path)
             demo_data[run_number][tick][f'{camera}_mask'] = mask_path
-            
-            # No need to save PCD, but record for later use in observation
-            demo_data[run_number][tick][f'{camera}_pcd'] = None
         
-        print(f'Saved images for timestep {tick} to episode{run_number} ({IMAGE_SIZE}x{IMAGE_SIZE} resolution)')
+        print(f'Saved images and point clouds for timestep {tick} to episode{run_number} ({IMAGE_SIZE}x{IMAGE_SIZE} resolution)')
 
-# Update the save_demonstration_data function to correctly handle depth conversion
+# FUNCTION 1: ADD this function to properly reshape your MuJoCo point clouds
+def reshape_mujoco_pcd_for_peract(pcd_mujoco, target_shape=(128, 128)):
+    """
+    Reshape MuJoCo point cloud (N, 3) to PerAct format (3, H, W)
+    Uses your actual MuJoCo point clouds, just reshapes them properly
+    """
+    h, w = target_shape
+    total_pixels = h * w
+    
+    if len(pcd_mujoco) >= total_pixels:
+        # Use first H*W points from your MuJoCo point cloud
+        pcd_reshaped = pcd_mujoco[:total_pixels].reshape(h, w, 3)
+    else:
+        # If not enough points, pad with the last point or zeros
+        pcd_full = np.zeros((total_pixels, 3), dtype=np.float32)
+        pcd_full[:len(pcd_mujoco)] = pcd_mujoco
+        # Fill remaining with the last valid point if available
+        if len(pcd_mujoco) > 0:
+            pcd_full[len(pcd_mujoco):] = pcd_mujoco[-1]
+        pcd_reshaped = pcd_full.reshape(h, w, 3)
+    
+    # Convert to PerAct format (3, H, W)
+    pcd_array = np.transpose(pcd_reshaped, (2, 0, 1)).astype(np.float32)
+    
+    return pcd_array
+
+# FUNCTION 2: REPLACE your save_demonstration_data function with this updated version:
 def save_demonstration_data(run_number, env):
-    """Save demonstration data in RLBench format with correct camera parameters"""
+    """Save demonstration data using your MuJoCo point clouds in PerAct format"""
     # Create episode directory
     episode_dir = f"{DATA_PATH}/episode{run_number}"
     ensure_dir(episode_dir)
@@ -281,6 +297,9 @@ def save_demonstration_data(run_number, env):
             # Use the pre-calculated metric depth if available
             if f'{camera}_depth_metric' in data:
                 depth_array = data[f'{camera}_depth_metric']
+                # FIX: Convert from (1, H, W) to (H, W) for RLBench
+                if len(depth_array.shape) == 3 and depth_array.shape[0] == 1:
+                    depth_array = depth_array[0]  # Remove the first dimension
             # Otherwise, load and convert the depth PNG
             elif f'{camera}_depth' in data:
                 depth_img = Image.open(data[f'{camera}_depth'])
@@ -288,19 +307,28 @@ def save_demonstration_data(run_number, env):
                 normalized_depth = image_to_float_array(depth_img, DEPTH_SCALE)
                 # Convert normalized to metric
                 metric_depth = NEAR_PLANE + normalized_depth * (FAR_PLANE - NEAR_PLANE)
-                depth_array = metric_depth.reshape(1, IMAGE_SIZE, IMAGE_SIZE)
+                depth_array = metric_depth  # Keep as (H, W) for RLBench
             else:
-                depth_array = np.zeros((1, IMAGE_SIZE, IMAGE_SIZE), dtype=np.float32)
+                depth_array = np.zeros((IMAGE_SIZE, IMAGE_SIZE), dtype=np.float32)  # (H, W) format
             
-            # Create mask and point cloud arrays
+            # Create mask array
             mask_array = create_empty_mask()
-            pcd_array = create_empty_pcd()
+            
+            # FIXED: Use your MuJoCo point clouds, just reshape them properly
+            if f'{camera}_pointcloud' in data:
+                pcd_file_path = data[f'{camera}_pointcloud']
+                pcd_mujoco = load_pointcloud_data(pcd_file_path)  # Your original MuJoCo PCD
+                
+                # Reshape your MuJoCo point cloud to PerAct format (3, H, W)
+                pcd_array = reshape_mujoco_pcd_for_peract(pcd_mujoco, target_shape=(IMAGE_SIZE, IMAGE_SIZE))
+            else:
+                pcd_array = create_empty_pcd()  # Fallback to empty
             
             # Add to observation parameters
             obs_params[f'{camera}_rgb'] = rgb_array
             obs_params[f'{camera}_depth'] = depth_array
             obs_params[f'{camera}_mask'] = mask_array
-            obs_params[f'{camera}_point_cloud'] = pcd_array
+            obs_params[f'{camera}_point_cloud'] = pcd_array  # Use your MuJoCo point cloud
         
         # Add robot state
         obs_params['joint_velocities'] = np.array(data.get('joint_velocities', np.zeros(6)), dtype=np.float32)
@@ -316,19 +344,13 @@ def save_demonstration_data(run_number, env):
         
         # Add camera parameters for each camera
         for camera in CAMERAS:
-            # Get parameters from stored data if available
-            if 'camera_params' in data and 'intrinsics' in data['camera_params'] and camera in data['camera_params']['intrinsics']:
+            # Use resized intrinsics if available, otherwise use original
+            if f'{camera}_intrinsics_resized' in data:
+                intrinsics = data[f'{camera}_intrinsics_resized']
+            else:
                 intrinsics = data['camera_params']['intrinsics'][camera]
-            else:
-                # Fallback to calculated intrinsics
-                fovy = CAMERA_FOVS[camera]
-                intrinsics = calculate_intrinsics(fovy, IMAGE_SIZE, IMAGE_SIZE)
             
-            if 'camera_params' in data and 'extrinsics' in data['camera_params'] and camera in data['camera_params']['extrinsics']:
-                extrinsics = data['camera_params']['extrinsics'][camera]
-            else:
-                # Fallback to identity if not available
-                extrinsics = np.identity(4, dtype=np.float32)
+            extrinsics = data['camera_params']['extrinsics'][camera]
             
             # Add to observation parameters
             obs_params['misc'][f'{camera}_camera_intrinsics'] = intrinsics
@@ -401,7 +423,7 @@ def save_demonstration_data(run_number, env):
     with open(os.path.join(episode_dir, 'variation_descriptions.pkl'), 'wb') as f:
         pickle.dump(variation_descriptions, f)
         
-    print(f"Saved demonstration {run_number} in RLBench format with {len(observations)} timesteps")
+    print(f"Saved demonstration {run_number} using your MuJoCo point clouds in PerAct format ({len(observations)} timesteps)")
 
 def create_empty_mask(shape=(IMAGE_SIZE, IMAGE_SIZE)):
     """Create an empty mask image with the right format"""
@@ -428,26 +450,7 @@ def calculate_intrinsics(fovy, width, height):
     
     return K
 
-def get_camera_extrinsics(env, camera_name):
-    """Get camera extrinsics matrix from MuJoCo environment"""
-    # Get camera position and orientation from MuJoCo
-    p_cam, R_cam = env.get_pR_body(body_name=camera_name)
-    
-    # Create extrinsics matrix (4x4 transformation matrix)
-    extrinsics = np.eye(4, dtype=np.float32)
-    extrinsics[:3, :3] = R_cam
-    extrinsics[:3, 3] = p_cam
-    
-    # Camera axis correction (as needed for MuJoCo)
-    camera_axis_correction = np.array([
-        [1.0, 0.0, 0.0, 0.0],
-        [0.0, -1.0, 0.0, 0.0],
-        [0.0, 0.0, -1.0, 0.0],
-        [0.0, 0.0, 0.0, 1.0]
-    ])
-    
-    return extrinsics @ camera_axis_correction
-
+# Main execution
 running_event = threading.Event()
 running_event.set()
 run_number = 0
@@ -456,6 +459,7 @@ image_queue = queue.Queue()
 # Start image processing thread
 image_thread = threading.Thread(target=save_image_thread, args=[running_event], daemon=True)
 image_thread.start()
+
 try:
     while True:
         env, obj_names, q_init_upright, platform_xyz = init_env()
@@ -471,9 +475,14 @@ try:
                 'left_shoulder': env.get_pR_body(body_name='left_shoulder_camera'),
                 'right_shoulder': env.get_pR_body(body_name='right_shoulder_camera')
             }
-            
-            # Calculate targets
-            camera_targets = {camera: p + R[:,2] for camera, (p, R) in cameras_pr.items()}
+                        
+            # Target for all cameras
+            if obj_names:
+                common_target = env.get_p_body(obj_names[0])  # Look at the object
+            else:
+                common_target = np.array([1.0, 0.0, 0.8])  # Fixed point in space
+
+            p_trgt = common_target  # SAME target for ALL cameras
             
             # Capture images every N steps
             if tick % 5 == 0:
@@ -483,31 +492,33 @@ try:
                     'extrinsics': {}
                 }
                 
-                # Capture RGB and depth for each camera
+                # Capture RGB, depth, and point clouds for each camera
                 rgb_images = []
                 depth_images = []
-                
+                pcds = []  # NEW: Store point clouds
+
+                import open3d as o3d
+
                 for camera_idx, camera in enumerate(CAMERAS):
                     p_ego, R_ego = cameras_pr[camera]
-                    p_trgt = camera_targets[camera]
                     
-                    # Get correct FOV for this camera
-                    fovy = CAMERA_FOVS[camera]
-                    
+                    fovy = 45
                     rgb_img, depth_img, pcd, xyz_img = env.get_egocentric_rgb_depth_pcd(
                         p_ego=p_ego, p_trgt=p_trgt, rsz_rate=None, fovy=fovy, BACKUP_AND_RESTORE_VIEW=True)
-                    
+                    print("MuJoCo depth shape:", depth_img.shape)
+                    print("MuJoCo depth sample values:", depth_img[100:105, 100:105])
+                    print("MuJoCo depth min/max:", depth_img.min(), depth_img.max())
                     rgb_images.append(rgb_img)
                     depth_images.append(depth_img)
+                    pcds.append(pcd)  # NEW: Save the working point cloud
                     
-                    # Calculate intrinsics and store
-                    intrinsics = calculate_intrinsics(fovy, IMAGE_SIZE, IMAGE_SIZE)
+                    original_height, original_width = depth_img.shape[:2] if len(depth_img.shape) == 3 else depth_img.shape
+                    intrinsics = calculate_intrinsics(fovy, original_width, original_height)
                     camera_params['intrinsics'][camera] = intrinsics
-                    
-                    # Get extrinsics and store
+
                     extrinsics = get_camera_extrinsics(env, CAMERA_BODIES[camera])
                     camera_params['extrinsics'][camera] = extrinsics
-                
+
                 # Get robot position
                 joint_angles = env.get_q([0, 1, 2, 3, 4, 5])
                 gripper_open = env.get_q([6])[0] + 0.7 < 0
@@ -516,8 +527,8 @@ try:
                 pose = np.concatenate([p, q])
                 vels = env.get_qvel_joints(['shoulder_pan_joint', 'shoulder_lift_joint', 'elbow_joint', 'wrist_1_joint', 'wrist_2_joint', 'wrist_3_joint'])
                 
-                # Add to queue for processing with camera parameters
-                image_queue.put((run_number, rgb_images, depth_images, joint_angles, pose, vels, gripper_open, t, camera_params))
+                # Add to queue for processing - NOW includes pcds
+                image_queue.put((run_number, rgb_images, depth_images, pcds, joint_angles, pose, vels, gripper_open, t, camera_params))
                 t += 1
             
             # Step simulation
@@ -526,12 +537,12 @@ try:
             env.render()
             tick += 1
         
-        # Process collected data - now pass env to save correct camera parameters
+        # Process collected data
         save_demonstration_data(run_number, env)
         
         run_number += 1
         env.close_viewer()
-        if run_number >= 20:
+        if run_number >= NUM_DEMOS:
             break
 
 except KeyboardInterrupt:
@@ -540,6 +551,6 @@ except KeyboardInterrupt:
     image_thread.join()
 
 finally:
-    # Save any remaining demonstrations - note we don't have env here, so passing None
-    for run_number in demo_data:
-        save_demonstration_data(run_number, None)
+    # Save any remaining demonstrations
+    for run_num in demo_data:
+        save_demonstration_data(run_num, None)
