@@ -1,4 +1,4 @@
-from ppo_train import PickPlaceEnvImage
+from RL.ppo_train import PickPlaceEnvImage
 from stable_baselines3 import PPO
 
 env = PickPlaceEnvImage(add_proprioception=True, use_viewer= True)

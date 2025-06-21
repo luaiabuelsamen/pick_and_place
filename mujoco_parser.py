@@ -3,6 +3,8 @@ import os
 import cv2
 import mujoco_viewer
 import numpy as np
+import math
+np.math = math
 import matplotlib.pyplot as plt
 import sys
 from util import (compute_view_params, get_rotation_matrix_from_two_points,
@@ -1032,7 +1034,7 @@ class MuJoCoParserClass(object):
 
 
 def init_env():
-    xml_path = '/home/jetson3/luai/pick_and_place/assets/ur5e/scene_ur5e_rg2_d435i_obj.xml'
+    xml_path = 'assets/ur5e/scene_ur5e_rg2_d435i_obj.xml'
     env = MuJoCoParserClass(name='UR5e with RG2 gripper', rel_xml_path=xml_path, VERBOSE=True)
 
     # Your existing simulation code...
@@ -1061,7 +1063,6 @@ def init_env():
     env.step([1], [6])
     env.forward(q=q_init_upright, joint_idxs=env.idxs_forward)
     env.init_viewer(viewer_title='UR5e with RG2 gripper', viewer_width=1200, viewer_height=800, viewer_hide_menus=True)
-    env.update_viewer(azimuth=66.08, distance=3.0, elevation=-50, lookat=[0.4, 0.18, 0.71], VIS_TRANSPARENT=False, VIS_CONTACTPOINT=False, contactwidth=0.05, contactheight=0.05, contactrgba=np.array([1, 0, 0, 1]), VIS_JOINT=True, jointlength=0.25, jointwidth=0.05, jointrgba=[0.2, 0.6, 0.8, 0.6])
-    # while True:
-    #     env.render()
+    env.update_viewer(azimuth=66.08, distance=3.0, elevation=-50, lookat=[0.4, 0.18, 0.71], VIS_TRANSPARENT=False, VIS_CONTACTPOINT=False, contactwidth=0.05, contactheight=0.05, contactrgba=np.array([1, 0, 0, 1]), VIS_JOINT=False, jointlength=0.25, jointwidth=0.05, jointrgba=[0.2, 0.6, 0.8, 0.6])
+
     return env, obj_names, q_init_upright, platform_xyz
